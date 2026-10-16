@@ -10,18 +10,55 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("📝 ロイロノート用テスト作成アシスタント (v2)")
+st.title("📝 ロイロノート用テスト作成アシスタント (v3)")
 st.caption("iPadで撮影した問題画像から、ロイロノートに直接インポートできるCSVテストを作成します。")
 
 # サイドバー: APIキー設定とモデル選択
 with st.sidebar:
     st.header("⚙️ 設定")
     api_key = st.text_input("Gemini API Key", type="password", help="Google AI Studioで取得したAPIキーを入力してください。")
-    
+
+if not api_key:
+    st.warning("👈 サイドバーに Gemini API キーを入力してください。")
+    st.stop()
+
+# API設定
+genai.configure(api_key=api_key)
+
+# 動的に利用可能なモデルを取得
+@st.cache_data(ttl=3600)
+def get_available_models(key):
+    try:
+        genai.configure(api_key=key)
+        valid_models = []
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                name = m.name.replace("models/", "")
+                # 画像処理(マルチモーダル)対応の主要モデルを優先
+                valid_models.append(name)
+        
+        # 優先順位ソート（flashやproを上位に）
+        priority_keywords = ["1.5-flash", "2.0-flash", "1.5-pro", "flash", "pro"]
+        sorted_models = []
+        for kw in priority_keywords:
+            for vm in valid_models:
+                if kw in vm and vm not in sorted_models:
+                    sorted_models.append(vm)
+        for vm in valid_models:
+            if vm not in sorted_models:
+                sorted_models.append(vm)
+                
+        return sorted_models if sorted_models else ["gemini-1.5-flash", "gemini-1.5-pro"]
+    except Exception:
+        return ["gemini-1.5-flash", "gemini-1.5-pro"]
+
+available_models = get_available_models(api_key)
+
+with st.sidebar:
     selected_model_name = st.selectbox(
         "使用モデル",
-        ["自動判定 (推奨)", "gemini-1.5-flash", "gemini-2.5-flash", "gemini-1.5-pro", "gemini-2.0-flash-exp"],
-        help="エラーが発生する場合はモデルを変更してください。"
+        ["自動判定 (利用可能モデルを自動選択)"] + available_models,
+        help="Googleアカウントで利用可能なモデルを自動取得しています。"
     )
     
     st.markdown("---")
@@ -30,12 +67,6 @@ with st.sidebar:
     st.markdown("- **虫食い表示**: `\\operatorname{\\mathrm{\\lower{0.1ex}{\\Box}}}`")
     st.markdown("- **数式問題**: 解答欄の日本語を完全排除")
     st.markdown("- **選択問題**: `radio` (単一選択)形式")
-
-if not api_key:
-    st.warning("👈 サイドバーに Gemini API キーを入力してください。")
-    st.stop()
-
-genai.configure(api_key=api_key)
 
 # メイン画面 layout
 col1, col2 = st.columns([1, 1])
@@ -97,12 +128,12 @@ SYSTEM_PROMPT = f"""
 ]
 """
 
-def get_model_response(prompt_text, file_type, bytes_data, user_selected):
+def get_model_response(prompt_text, file_type, bytes_data, user_selected, valid_list):
     candidate_models = []
-    if user_selected != "自動判定 (推奨)":
+    if user_selected != "自動判定 (利用可能モデルを自動選択)":
         candidate_models = [user_selected]
     else:
-        candidate_models = ["gemini-1.5-flash", "gemini-2.5-flash", "gemini-1.5-pro", "gemini-2.0-flash-exp"]
+        candidate_models = valid_list
     
     last_error = None
     for m_name in candidate_models:
@@ -123,7 +154,7 @@ if generate_btn and uploaded_file:
         try:
             image_bytes = uploaded_file.getvalue()
             raw_text, used_model = get_model_response(
-                SYSTEM_PROMPT, uploaded_file.type, image_bytes, selected_model_name
+                SYSTEM_PROMPT, uploaded_file.type, image_bytes, selected_model_name, available_models
             )
             
             raw_text = raw_text.strip()
@@ -171,4 +202,4 @@ if generate_btn and uploaded_file:
             )
             
         except Exception as e:
-            st.error(f"エラーが発生しました: {e}\n\n※サイドバーの「使用モデル」を変更してお試しください。")
+            st.error(f"エラーが発生しました: {e}\n\n※サイドバーの「使用モデル」から別のモデルを選択してお試しください。")
