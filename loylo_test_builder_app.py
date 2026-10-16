@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import json
-import io
 import google.generativeai as genai
 
 # ページ基本設定（iPad画面に最適化）
@@ -11,13 +10,20 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("📝 ロイロノート用テスト作成アシスタント")
+st.title("📝 ロイロノート用テスト作成アシスタント (v2)")
 st.caption("iPadで撮影した問題画像から、ロイロノートに直接インポートできるCSVテストを作成します。")
 
-# サイドバー: APIキー設定
+# サイドバー: APIキー設定とモデル選択
 with st.sidebar:
     st.header("⚙️ 設定")
     api_key = st.text_input("Gemini API Key", type="password", help="Google AI Studioで取得したAPIキーを入力してください。")
+    
+    selected_model_name = st.selectbox(
+        "使用モデル",
+        ["自動判定 (推奨)", "gemini-1.5-flash", "gemini-2.5-flash", "gemini-1.5-pro", "gemini-2.0-flash-exp"],
+        help="エラーが発生する場合はモデルを変更してください。"
+    )
+    
     st.markdown("---")
     st.markdown("### 📌 適用中のルール")
     st.markdown("- **数式表示**: `[$ ... ]` (LaTeX表記)")
@@ -62,7 +68,7 @@ SYSTEM_PROMPT = f"""
    - 数値・数式で答える問題: "short:math"
    - 比較・記号・文章から選ぶ問題: "radio"
 2. 数式表記:
-   - 全すべての数式・数値式は `[$ ... ]` で囲むこと（例: `[$ 4 : 9 = 20 : x ]`）。
+   - すべての数式・数値式は `[$ ... ]` で囲むこと（例: `[$ 4 : 9 = 20 : x ]`）。
    - パーセント記号は `\\％` と表記。
    - 範囲記号（〜）は `\\sim` と表記。
 3. 四角・虫食い（□）の表記:
@@ -86,24 +92,41 @@ SYSTEM_PROMPT = f"""
     "score": 10,
     "correct": "正解の選択肢番号(radioの場合)または空白",
     "explanation": "解説文",
-    "choices": ["正解の数値", "別解数値など"] (short:mathの場合) または ["選択肢1", "選択肢2"...] (radioの場合)
+    "choices": ["正解の数値"] (short:mathの場合) または ["選択肢1", "選択肢2"...] (radioの場合)
   }}
 ]
 """
 
+def get_model_response(prompt_text, file_type, bytes_data, user_selected):
+    candidate_models = []
+    if user_selected != "自動判定 (推奨)":
+        candidate_models = [user_selected]
+    else:
+        candidate_models = ["gemini-1.5-flash", "gemini-2.5-flash", "gemini-1.5-pro", "gemini-2.0-flash-exp"]
+    
+    last_error = None
+    for m_name in candidate_models:
+        try:
+            model = genai.GenerativeModel(m_name)
+            res = model.generate_content([
+                prompt_text,
+                {"mime_type": file_type, "data": bytes_data}
+            ])
+            return res.text, m_name
+        except Exception as e:
+            last_error = e
+            continue
+    raise last_error
+
 if generate_btn and uploaded_file:
     with st.spinner("AIが画像を解析し、ロイロノート用テストを作成中..."):
         try:
-            model = genai.GenerativeModel("gemini-1.5-flash")
             image_bytes = uploaded_file.getvalue()
+            raw_text, used_model = get_model_response(
+                SYSTEM_PROMPT, uploaded_file.type, image_bytes, selected_model_name
+            )
             
-            response = model.generate_content([
-                SYSTEM_PROMPT,
-                {"mime_type": uploaded_file.type, "data": image_bytes}
-            ])
-            
-            # レスポンスからJSON抽出
-            raw_text = response.text.strip()
+            raw_text = raw_text.strip()
             if "```json" in raw_text:
                 json_str = raw_text.split("```json")[1].split("```")[0].strip()
             elif "```" in raw_text:
@@ -112,7 +135,7 @@ if generate_btn and uploaded_file:
                 json_str = raw_text
                 
             questions = json.loads(json_str)
-            st.success("🎉 テストデータの生成が完了しました！")
+            st.success(f"🎉 テストデータの生成が完了しました！（使用モデル: {used_model}）")
             
             # CSV変換処理
             csv_lines = ["v1.2.0,,,,,,,", "問題形式,問題文,解答必須,配点,正解の選択肢,解説,選択肢1,選択肢2,選択肢3,選択肢4"]
@@ -148,4 +171,4 @@ if generate_btn and uploaded_file:
             )
             
         except Exception as e:
-            st.error(f"エラーが発生しました: {e}")
+            st.error(f"エラーが発生しました: {e}\n\n※サイドバーの「使用モデル」を変更してお試しください。")
